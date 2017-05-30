@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 
+import functools
 import threading
 
 
@@ -24,3 +25,12 @@ def async_wrapper(func):
         detach(func, *args, **kwargs)
 
     return wrap
+
+
+def channel(func):
+    @functools.wraps(func)
+    def wrapped(*args, **kwargs):
+        return func(*args, **kwargs)
+    wrapped.channel = True
+
+    return wrapped
