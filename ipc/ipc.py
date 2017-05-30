@@ -184,7 +184,12 @@ class Process(object):
         msg = self.read()
         if not msg:
             return
-        getattr(self, 'on_msg_%s' % msg.name)(**msg.args)
+
+        method = getattr(self, 'on_msg_%s' % msg.name)
+        if hasattr(method, 'channel'):
+            method(channel=msg.channel, **msg.args)
+        else:
+            method(**msg.args)
 
     def run(self):
         util.detach(self._writer)
