@@ -109,6 +109,9 @@ class Process(object):
     def start(self):
         if self.thread:
             raise RuntimeError('Already started')
+        self.proc = subprocess.Popen(
+            self.args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
         self.running = True
         self.thread = util.detach(self.run)
 
@@ -184,9 +187,6 @@ class Process(object):
         getattr(self, 'on_msg_%s' % msg.name)(**msg.args)
 
     def run(self):
-        self.proc = subprocess.Popen(
-            self.args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-        )
         util.detach(self._writer)
         out_thread = util.detach(self._reader, self.proc.stdout, 'out')
         err_thread = util.detach(self._reader, self.proc.stderr, 'err')
