@@ -32,8 +32,14 @@ class Message(object):
 
     @classmethod
     def parse(cls, line, channel):
-        data = json.loads(line)
-        return cls(data['name'], channel, **data['args'])
+        try:
+            data = json.loads(line)
+        except ValueError:
+            if line:
+                return cls('jsonerr', channel, msg=line)
+            raise
+        else:
+            return cls(data['name'], channel, **data['args'])
 
 
 class Signal(object):
