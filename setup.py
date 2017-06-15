@@ -21,7 +21,7 @@ setup(
     description='Interprocess communication via standard streams.',
     zip_safe=False,
     platforms='any',
-    long_description=open(os.path.join(DIR, 'README.rst')).read(),
+    long_description=open(os.path.join(DIR, 'README.md')).read(),
     classifiers=[
         'Development Status :: 5 - Production/Stable',
         'Intended Audience :: Developers',
