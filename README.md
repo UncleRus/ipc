@@ -1,2 +1,9 @@
 # ipc
-Python library for interprocess communication via standard streams.
+
+Interprocess communication via standard streams (stdin, stdout, stderr).
+
+## Installation
+
+```
+$ pip install ipc
+```
