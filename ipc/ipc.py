@@ -1,13 +1,37 @@
 # -*- coding: utf-8 -*-
 
+# Copyright 2015-2017 Ruslan V. Uss (https://github.com/UncleRus)
+# Copyright 2017 Oleg Golovanov (https://github.com/oleg-golovanov)
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to
+# deal in the Software without restriction, including without limitation the
+# rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+# sell copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+# OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+# ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+# OTHER DEALINGS IN THE SOFTWARE.
+
 
 import sys
 import time
 import json
-import Queue
+if sys.version_info[0] == 2:
+    from Queue import Queue, Empty
+else:
+    from queue import Queue, Empty
 import subprocess
 
-import util
+from . import util
 
 
 class Message(object):
@@ -42,63 +66,12 @@ class Message(object):
             return cls(data['name'], channel, **data['args'])
 
 
-class Signal(object):
-
-    def __init__(self, append_sender=True):
-        self.slots = {}
-        self._owner = None
-        self.append_sender = append_sender
-
-    def __get__(self, obj, cls=None):
-        self._owner = obj
-        return self
-
-    def _check(self):
-        if not self._owner:
-            raise RuntimeError('Signal is not bounded')
-
-    def _connect(self, slot):
-        if not callable(slot):
-            raise TypeError('Slot is not callable')
-        if self._owner not in self.slots:
-            self.slots[self._owner] = []
-        if slot not in self.slots[self._owner]:
-            self.slots[self._owner].append(slot)
-
-    def connect(self, slot):
-        self._check()
-        self._connect(slot)
-
-    def connect_async(self, slot):
-        self._check()
-        self._connect(util.async_wrapper(slot))
-
-    def disconnect(self, slot):
-        self._check()
-        try:
-            self.slots[self._owner].remove(slot)
-        except (ValueError, KeyError):
-            pass
-
-    def clear(self):
-        self._check()
-        if self._owner in self.slots:
-            del self.slots[self._owner]
-
-    def emit(self, *args, **kwargs):
-        self._check()
-        if self.append_sender:
-            args = (self._owner,) + args
-        for slot in self.slots.get(self._owner, []):
-            slot(*args, **kwargs)
-
-
 class Process(object):
 
     def __init__(self, *args):
         self.args = args
-        self.output = Queue.Queue()
-        self.input = Queue.Queue()
+        self.output = Queue()
+        self.input = Queue()
         self.thread = None
         self.running = False
         self.proc = None
@@ -125,8 +98,8 @@ class Process(object):
         if self.is_alive():
             self.stop()
         self.kill()
-        self.input = Queue.Queue()
-        self.output = Queue.Queue()
+        self.input = Queue()
+        self.output = Queue()
         self.start()
 
     def terminate(self):
@@ -154,7 +127,7 @@ class Process(object):
     def read(self):
         try:
             return self.output.get_nowait()
-        except Queue.Empty:
+        except Empty:
             return None
 
     def write(self, name, **kwargs):
@@ -181,15 +154,16 @@ class Process(object):
         self.proc.stdin.close()
 
     def process_messages(self):
-        msg = self.read()
-        if not msg:
-            return
+        while True:
+            msg = self.read()
+            if not msg:
+                return
 
-        method = getattr(self, 'on_msg_%s' % msg.name)
-        if hasattr(method, 'channel'):
-            method(channel=msg.channel, **msg.args)
-        else:
-            method(**msg.args)
+            method = getattr(self, 'on_msg_%s' % msg.name)
+            if hasattr(method, 'channel'):
+                method(channel=msg.channel, **msg.args)
+            else:
+                method(**msg.args)
 
     def run(self):
         util.detach(self._writer)
@@ -227,13 +201,12 @@ class Process(object):
         pass
 
 
-class SubprocessInterface(object):
-    stdin_error = Signal()
+class Interface(object):
 
     def __init__(self):
-        self.stdin = Queue.Queue()
-        self.stdout = Queue.Queue()
-        self.stderr = Queue.Queue()
+        self.stdin = Queue()
+        self.stdout = Queue()
+        self.stderr = Queue()
 
         self.stdin_thread = None
         self.stdout_thread = None
@@ -251,19 +224,19 @@ class SubprocessInterface(object):
                 msg = Message.parse(line, 'in')
                 self.stdin.put(msg)
             except Exception as e:
-                self.stdin_error.emit(e)
+                self.on_stdin_error(e)
 
-    def writer(self, queue, stream):
+    def writer(self, q, stream):
         while self.running:
             try:
-                queue.get(timeout=0.1).write(stream)
+                q.get(timeout=0.1).write(stream)
                 stream.flush()
-            except Queue.Empty:
+            except Empty:
                 pass
 
     def start(self):
         if self.running:
-            raise RuntimeError('Application is running already')
+            raise RuntimeError('Application is already running')
 
         self.running = True
 
@@ -286,5 +259,8 @@ class SubprocessInterface(object):
     def read(self):
         try:
             return self.stdin.get_nowait()
-        except Queue.Empty:
+        except Empty:
             return None
+
+    def on_stdin_error(self, e):
+        pass
