@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
 
+# IPC: A python library for interprocess communication via standard streams.
+#
+# $Id$
+#
+# License: MIT
 # Copyright 2015-2017 Ruslan V. Uss (https://github.com/UncleRus)
 # Copyright 2017 Oleg Golovanov (https://github.com/oleg-golovanov)
 #
@@ -31,14 +36,15 @@ from setuptools import setup
 DIR = os.path.dirname(__file__)
 
 
-with open(os.path.join(DIR, 'ipc', '__init__.py')) as f:
+with open(os.path.join(DIR, 'ipc.py')) as f:
     version = re.search(r'__version__\s+=\s+[\'\"]+(.*)[\'\"]+', f.read()).group(1)
 
 
 setup(
     name='ipc',
     version=version,
-    packages=['ipc'],
+    py_modules=['ipc'],
+    data_files=[('', ['LICENSE', 'README.md'])],
     description='Interprocess communication via standard streams.',
     zip_safe=False,
     platforms='any',

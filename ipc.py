@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
 
+# IPC: A python library for interprocess communication via standard streams.
+#
+# $Id$
+#
+# License: MIT
 # Copyright 2015-2017 Ruslan V. Uss (https://github.com/UncleRus)
 # Copyright 2017 Oleg Golovanov (https://github.com/oleg-golovanov)
 #
@@ -21,17 +26,49 @@
 # ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 # OTHER DEALINGS IN THE SOFTWARE.
 
+__version__ = '1.1.0'
 
 import sys
 import time
 import json
+import subprocess
+import functools
+import threading
+
+
 if sys.version_info[0] == 2:
     from Queue import Queue, Empty
 else:
     from queue import Queue, Empty
-import subprocess
 
-from . import util
+
+__all__ = (
+    'Process', 'Interface', 'Message', 'channel'
+)
+
+
+class AttrDict(dict):
+
+    def __init__(self, *args, **kwargs):
+        super(AttrDict, self).__init__(*args, **kwargs)
+        self.__dict__ = self
+
+
+def detach(func, *args, **kwargs):
+    thread = threading.Thread(target=func, args=args, kwargs=kwargs)
+    thread.setDaemon(True)
+    thread.start()
+
+    return thread
+
+
+def channel(func):
+    @functools.wraps(func)
+    def wrapped(*args, **kwargs):
+        return func(*args, **kwargs)
+    wrapped.channel = True
+
+    return wrapped
 
 
 class Message(object):
@@ -39,7 +76,7 @@ class Message(object):
     def __init__(self, name, channel=None, **kwargs):
         self.name = name
         self.channel = channel
-        self.args = util.AttrDict(kwargs)
+        self.args = AttrDict(kwargs)
 
     def dumps(self):
         return json.dumps({'name': self.name, 'args': self.args})
@@ -86,7 +123,7 @@ class Process(object):
             self.args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
         )
         self.running = True
-        self.thread = util.detach(self.run)
+        self.thread = detach(self.run)
 
     def stop(self):
         if not self.thread:
@@ -166,9 +203,9 @@ class Process(object):
                 method(**msg.args)
 
     def run(self):
-        util.detach(self._writer)
-        out_thread = util.detach(self._reader, self.proc.stdout, 'out')
-        err_thread = util.detach(self._reader, self.proc.stderr, 'err')
+        detach(self._writer)
+        out_thread = detach(self._reader, self.proc.stdout, 'out')
+        err_thread = detach(self._reader, self.proc.stderr, 'err')
         self.on_started()
 
         while self.running and self.proc.poll() is None:
@@ -203,7 +240,9 @@ class Process(object):
 
 class Interface(object):
 
-    def __init__(self):
+    def __init__(self, on_stdin_error=None):
+        self.on_stdin_error = on_stdin_error
+
         self.stdin = Queue()
         self.stdout = Queue()
         self.stderr = Queue()
@@ -224,7 +263,8 @@ class Interface(object):
                 msg = Message.parse(line, 'in')
                 self.stdin.put(msg)
             except Exception as e:
-                self.on_stdin_error(e)
+                if callable(self.on_stdin_error):
+                    self.on_stdin_error(self, e)
 
     def writer(self, q, stream):
         while self.running:
@@ -241,9 +281,9 @@ class Interface(object):
         self.running = True
 
         # Создаем треды для обмена с внешним миром
-        self.stdin_thread = util.detach(self.reader)
-        self.stdout_thread = util.detach(self.writer, self.stdout, sys.stdout)
-        self.stderr_thread = util.detach(self.writer, self.stderr, sys.stderr)
+        self.stdin_thread = detach(self.reader)
+        self.stdout_thread = detach(self.writer, self.stdout, sys.stdout)
+        self.stderr_thread = detach(self.writer, self.stderr, sys.stderr)
 
     def stop(self):
         if not self.running:
@@ -261,6 +301,3 @@ class Interface(object):
             return self.stdin.get_nowait()
         except Empty:
             return None
-
-    def on_stdin_error(self, e):
-        pass
