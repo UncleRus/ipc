@@ -36,18 +36,25 @@ with open(os.path.join(DIR, 'ipc', '__init__.py')) as f:
 
 
 setup(
-    name = 'ipc',
-    version = version,
-    packages = ['ipc'],
-    description = 'Interprocess communication via standard streams.',
-    zip_safe = False,
-    platforms = 'any',
-    long_description = open(os.path.join(DIR, 'README.md')).read(),
-    classifiers = [
+    name='ipc',
+    version=version,
+    packages=['ipc'],
+    description='Interprocess communication via standard streams.',
+    zip_safe=False,
+    platforms='any',
+    long_description=open(os.path.join(DIR, 'README.md')).read(),
+    classifiers=[
         'Development Status :: 5 - Production/Stable',
         'Intended Audience :: Developers',
         'Operating System :: OS Independent',
         'Programming Language :: Python :: 2.7',
+        'Programming Language :: Python :: 3.0',
+        'Programming Language :: Python :: 3.1',
+        'Programming Language :: Python :: 3.2',
+        'Programming Language :: Python :: 3.3',
+        'Programming Language :: Python :: 3.4',
+        'Programming Language :: Python :: 3.5',
+        'Programming Language :: Python :: 3.6',
         'Programming Language :: Python :: Implementation :: CPython',
         'Topic :: Software Development :: Libraries :: Python Modules'
     ]
