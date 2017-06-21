@@ -1,10 +1,9 @@
-ipc
----
+# ipc
 
 Interprocess communication via standard streams (stdin, stdout, stderr).
 
-Installation
-------------
-::
+## Installation
 
-    $ pip install ipc
+```
+$ pip install ipc
+```
