@@ -26,7 +26,7 @@
 # ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 # OTHER DEALINGS IN THE SOFTWARE.
 
-__version__ = '1.1.0'
+__version__ = '1.1.3'
 
 import sys
 import time
@@ -34,17 +34,14 @@ import json
 import subprocess
 import functools
 import threading
-
+import os
+import signal
+import logging
 
 if sys.version_info[0] == 2:
     from Queue import Queue, Empty
 else:
     from queue import Queue, Empty
-
-
-__all__ = (
-    'Process', 'Interface', 'Message', 'channel'
-)
 
 
 class AttrDict(dict):
@@ -105,8 +102,10 @@ class Message(object):
 
 class Process(object):
 
-    def __init__(self, *args):
+    def __init__(self, *args, **kwargs):
         self.args = args
+        self.interval = kwargs.get('interval', 0.01)
+        self.msg_cls = kwargs.get('msg_cls', Message)
         self.output = Queue()
         self.input = Queue()
         self.thread = None
@@ -144,7 +143,7 @@ class Process(object):
             return
         try:
             self.proc.terminate()
-        except Exception:
+        except:
             pass
         self.running = False
         if self.thread:
@@ -155,7 +154,7 @@ class Process(object):
             return
         try:
             self.proc.kill()
-        except Exception:
+        except:
             pass
         self.running = False
         if self.thread:
@@ -168,14 +167,14 @@ class Process(object):
             return None
 
     def write(self, name, **kwargs):
-        self.input.put(name if isinstance(name, Message) else Message(name, **kwargs))
+        self.input.put(name if isinstance(name, Message) else self.msg_cls(name, **kwargs))
 
     def _reader(self, stream, datatype):
         try:
             for line in iter(stream.readline, b''):
                 try:
-                    self.output.put(Message.parse(line, datatype))
-                except Exception:
+                    self.output.put(self.msg_cls.parse(line, datatype))
+                except:
                     pass
             stream.close()
         except IOError:
@@ -185,9 +184,9 @@ class Process(object):
         while self.is_alive():
             try:
                 self.input.get_nowait().write(self.proc.stdin)
-            except Exception:
+            except:
                 pass
-            time.sleep(0.01)
+            time.sleep(self.interval)
         self.proc.stdin.close()
 
     def process_messages(self):
@@ -210,7 +209,7 @@ class Process(object):
 
         while self.running and self.proc.poll() is None:
             self.process_messages()
-            time.sleep(0.01)
+            time.sleep(self.interval)
 
         if self.proc.poll() is None:
             self.proc.terminate()
@@ -240,8 +239,9 @@ class Process(object):
 
 class Interface(object):
 
-    def __init__(self, on_stdin_error=None):
+    def __init__(self, on_stdin_error=None, msg_cls=Message):
         self.on_stdin_error = on_stdin_error
+        self.msg_cls = msg_cls
 
         self.stdin = Queue()
         self.stdout = Queue()
@@ -260,7 +260,7 @@ class Interface(object):
                 line = sys.stdin.readline()
                 if not line:
                     return
-                msg = Message.parse(line, 'in')
+                msg = self.msg_cls.parse(line, 'in')
                 self.stdin.put(msg)
             except Exception as e:
                 if callable(self.on_stdin_error):
@@ -301,3 +301,63 @@ class Interface(object):
             return self.stdin.get_nowait()
         except Empty:
             return None
+
+
+try:
+    __sigkill = signal.SIGKILL
+except:
+    __sigkill = signal.SIGTERM
+
+
+class Worker(object):
+
+    def __init__(self, pid_file, logger=None, msg_cls=Message):
+        self.iface = Interface(self.on_stdin_error, msg_cls)
+        self.pid_file = pid_file
+        self.logger = logger
+        signal.signal(signal.SIGINT, self.on_sigint)
+
+    def log(self, *args, **kwargs):
+        if self.logger:
+            self.logger.log(*args, **kwargs)
+
+    def kill_copy(self):
+        try:
+            with open(self.pid_file) as f:
+                pid = int(f.read())
+                self.log(logging.INFO, 'Killing already running instance with PID %d...' % pid)
+                os.kill(pid, __sigkill)
+        except:
+            pass
+
+    def on_stdin_error(self, e):
+        self.log(logging.ERROR, 'STDIN read error: %r' % e)
+
+    def on_sigint(self, *args, **kwargs):
+        self.log(logging.INFO, 'Got SIGINT, exiting')
+        self.exit()
+
+    def start(self):
+
+        # trying to kill alredy running instance
+        self.kill_copy()
+
+        # writing PID to file
+        with open(self.pid_file, 'wb') as f:
+            f.write(str(os.getpid()))
+
+        self.log(logging.INFO, 'Started')
+
+    def exit(self):
+        self.iface.stop()
+        try:
+            os.remove(self.pid_file)
+        except:
+            pass
+
+
+__all__ = (
+    'Process', 'Interface', 'Message', 'channel', 'Worker'
+)
+
+
