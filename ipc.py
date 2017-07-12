@@ -26,7 +26,7 @@
 # ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 # OTHER DEALINGS IN THE SOFTWARE.
 
-__version__ = '1.1.3'
+__version__ = '1.2.0'
 
 
 import sys
@@ -69,6 +69,34 @@ def channel(func):
     return wrapped
 
 
+class StreamWrapper(object):
+    
+    def __init__(self, stream):
+        self.stream = stream
+        self.encoding = getattr(stream, 'encoding', None)
+    
+    def __getattr__(self, name):
+        return getattr(self.stream, name)
+            
+    def write(self, data):
+        binary = isinstance(data, (bytes, bytearray))
+        if (not self.encoding and binary) or (self.encoding and not binary):
+            return self.stream.write(data)
+        if self.encoding and binary:
+            return self.stream.write(data.decode(self.encoding))
+        return self.stream.write(data.encode('utf-8'))
+    
+    def read(self, *args, **kwargs):
+        data = self.stream.read(*args, **kwargs)
+        if isinstance(data, (bytes, bytearray)):
+            return data.decode('utf-8')
+        
+    def readline(self, *args, **kwargs):
+        data = self.stream.readline(*args, **kwargs)
+        if isinstance(data, (bytes, bytearray)):
+            return data.decode('utf-8')
+   
+
 class Message(object):
 
     def __init__(self, name, channel=None, **kwargs):
@@ -91,14 +119,8 @@ class Message(object):
 
     @classmethod
     def parse(cls, line, channel):
-        try:
-            data = json.loads(line)
-        except ValueError:
-            if line:
-                return cls('jsonerr', channel, msg=line)
-            raise
-        else:
-            return cls(data['name'], channel, **data['args'])
+        data = json.loads(line)
+        return cls(data['name'], channel, **data['args'])
 
 
 class Process(object):
@@ -171,24 +193,23 @@ class Process(object):
         self.input.put(name if isinstance(name, Message) else self.msg_cls(name, **kwargs))
 
     def _reader(self, stream, datatype):
-        try:
-            for line in iter(stream.readline, b''):
-                try:
-                    self.output.put(self.msg_cls.parse(line, datatype))
-                except:
-                    pass
-            stream.close()
-        except IOError:
-            pass
+        stream = StreamWrapper(stream)
+        for line in iter(stream.readline, ''):
+            try:
+                self.output.put(self.msg_cls.parse(line, datatype))
+            except Exception as e:
+                self.on_read_error(e)
+        stream.close()
 
     def _writer(self):
+        stdin = StreamWrapper(self.proc.stdin)
         while self.is_alive():
             try:
-                self.input.get_nowait().write(self.proc.stdin)
-            except:
-                pass
+                self.input.get_nowait().write(stdin)
+            except Exception as e:
+                self.on_write_error(e)
             time.sleep(self.interval)
-        self.proc.stdin.close()
+        stdin.close()
 
     def process_messages(self):
         while True:
@@ -236,6 +257,12 @@ class Process(object):
 
     def on_started(self):
         pass
+    
+    def on_read_error(self, e):
+        raise e
+    
+    def on_write_error(self, e):
+        raise e
 
 
 class Interface(object):
@@ -248,26 +275,30 @@ class Interface(object):
         self.stdout = Queue()
         self.stderr = Queue()
 
+        self.stdin_stream = StreamWrapper(sys.stdin)
+        self.stdout_stream = StreamWrapper(sys.stdout)
+        self.stderr_stream = StreamWrapper(sys.stderr)
+
         self.stdin_thread = None
         self.stdout_thread = None
         self.stderr_thread = None
 
         self.running = False
-        self.start()
 
     def reader(self):
         while self.running:
             try:
-                line = sys.stdin.readline()
+                line = self.stdin_stream.readline()
                 if not line:
                     return
                 msg = self.msg_cls.parse(line, 'in')
                 self.stdin.put(msg)
             except Exception as e:
                 if callable(self.on_stdin_error):
-                    self.on_stdin_error(self, e)
+                    self.on_stdin_error(e)
 
     def writer(self, q, stream):
+        stream = StreamWrapper(stream)
         while self.running:
             try:
                 q.get(timeout=0.1).write(stream)
@@ -304,20 +335,28 @@ class Interface(object):
             return None
 
 
-try:
-    __sigkill = signal.SIGKILL
-except:
-    __sigkill = signal.SIGTERM
-
-
 class Worker(object):
-
-    def __init__(self, pid_file, logger=None, msg_cls=Message):
-        self.iface = Interface(self.on_stdin_error, msg_cls)
+    
+    __sigkill = getattr(signal, 'SIGKILL', signal.SIGTERM)
+    
+    def __init__(self, pid_file, verbose, log_file=None, msg_cls=Message, handshake_msg=None, handshake_timeout=5, block_interval=0.1):
         self.pid_file = pid_file
-        self.logger = logger
+        self.started = False
+        self.handshake_msg = handshake_msg
+        self.handshake_timeout = handshake_timeout
+        self.block_interval = block_interval
+        
+        level = logging.DEBUG if verbose else logging.INFO
+        self.logger = logging.getLogger(type(self).__name__)
+        self.logger.setLevel(level)
+        h = logging.FileHandler(log_file) if log_file else logging.NullHandler()
+        h.setLevel(level)
+        h.setFormatter(logging.Formatter('[%(asctime)s] - %(levelname)s - %(name)s: %(message)s'))
+        self.logger.addHandler(h)
+        
+        self.iface = Interface(self.on_stdin_error, msg_cls)
         signal.signal(signal.SIGINT, self.on_sigint)
-
+        
     def log(self, *args, **kwargs):
         if self.logger:
             self.logger.log(*args, **kwargs)
@@ -327,34 +366,83 @@ class Worker(object):
             with open(self.pid_file) as f:
                 pid = int(f.read())
                 self.log(logging.INFO, 'Killing already running instance with PID %d...' % pid)
-                os.kill(pid, __sigkill)
-        except:
+                os.kill(pid, self.__sigkill)
+        except Exception as e:
+            self.log(logging.INFO, 'Could not kill copy: %r' % e)
+
+    def handshake(self):
+        self.iface.write(self.handshake_msg)
+        try:
+            self.handle_handshake(self.iface.stdin.get(timeout=self.handshake_timeout))
+        except Exception as e:
+            if isinstance(e, Empty):
+                e = IOError('Handshake timeout')
+            self.log(logging.ERROR, 'Handshake failed: %s' % str(e))
+            self.on_error(e)
+
+    def process_messages(self):
+        try:
+            while True:
+                self.handle_message(self.iface.stdin.get_nowait())
+        except Empty:
             pass
-
-    def on_stdin_error(self, e):
-        self.log(logging.ERROR, 'STDIN read error: %r' % e)
-
-    def on_sigint(self, *args, **kwargs):
-        self.log(logging.INFO, 'Got SIGINT, exiting')
-        self.exit()
-
+    
+    def write(self, name, **kwargs):
+        self.iface.write(name if isinstance(name, Message)
+                         else self.iface.msg_cls(name, **kwargs))
+    
+    def handle_message(self, msg):
+        self.log(logging.ERROR, 'Unknown message: %r' % msg)
+    
     def start(self):
-
         # trying to kill alredy running instance
         self.kill_copy()
 
         # writing PID to file
-        with open(self.pid_file, 'wb') as f:
+        with open(self.pid_file, 'w') as f:
             f.write(str(os.getpid()))
 
-        self.log(logging.INFO, 'Started')
-
-    def exit(self):
-        self.iface.stop()
         try:
-            os.remove(self.pid_file)
-        except:
-            pass
+            self.iface.start()
+            self.started = True
+    
+            if self.handshake_msg:
+                self.handshake()
+            
+            self.log(logging.INFO, 'Started')
+
+            self.run()
+        finally:
+            self.iface.stop()
+            try:
+                os.remove(self.pid_file)
+            except:
+                pass
+    
+    def stop(self):
+        self.started = False
+    
+    def run(self):
+        while self.started:
+            try:
+                self.process_messages()
+            except Exception as e:
+                self.on_error(e)
+            time.sleep(self.block_interval)
+    
+    def on_error(self, e):
+        self.iface.write(self.iface.msg_cls('error', code=type(e).__name__, message=str(e)), True)
+        raise e
+    
+    def on_stdin_error(self, e):
+        self.log(logging.ERROR, 'STDIN read error: %r' % e)
+        self.on_error(e)
+        raise e
+
+    def on_sigint(self, *args, **kwargs):
+        self.log(logging.INFO, 'Got SIGINT, exiting')
+        self.stop()
+        sys.exit()
 
 
 __all__ = (
